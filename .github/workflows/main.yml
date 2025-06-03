@@ -29,7 +29,7 @@ jobs:
           const fs = require('fs');
           const sarif = JSON.parse(fs.readFileSync('snyk-code-results.sarif', 'utf8'));
           const severityRank = level => ({ error: 2, warning: 1 }[level] || 0);
-          const severityIcons = { Critical: '🔴', Medium: '🟠' };
+          const severityIcons = { error: '🔴', warning: '🟠' };
 
           const repoUrl = process.env.GITHUB_SERVER_URL + '/' + process.env.GITHUB_REPOSITORY;
           const branch = process.env.GITHUB_HEAD_REF || process.env.GITHUB_REF_NAME || 'main';
@@ -45,7 +45,7 @@ jobs:
               const startLine = result.locations?.[0]?.physicalLocation?.region?.startLine || '?';
               const rule = rules[result.ruleId] || {};
               const message = rule.shortDescription?.text || result.message?.text || 'No description';
-              const helpUrl = rule.helpUri || `https://security.snyk.io/vuln/${result.ruleId}`;
+              const helpUrl = `https://security.snyk.io/rules/${result.ruleId}`;
 
               fileIssuesMap[file] = fileIssuesMap[file] || [];
               fileIssuesMap[file].push({ level, startLine, ruleId: result.ruleId, message, helpUrl });
@@ -74,8 +74,8 @@ jobs:
 
           output += '\n---\n';
           output += `### ℹ️ Notes\n`;
-          output += `- Only issues with severity \`error\` or \`warning\` are shown.\n`;
-          output += `- File and line links reference the current PR branch.\n`;
+          output += `- Only \`error\` and \`warning\` severity issues are included.\n`;
+          output += `- Each rule links to [Snyk's Vulnerability Database](https://security.snyk.io/) for more info.\n`;
           fs.writeFileSync('pr-code-comment.md', output);
           EOF
 
