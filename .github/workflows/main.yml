@@ -14,82 +14,82 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
 
+      - name: Install dependencies
+        run: npm install
+
       - name: Install Snyk CLI
         uses: snyk/actions/setup@master
 
-      - name: Run Snyk Code scan (SARIF output)
-        run: |
-          snyk code test --json --sarif > snyk-code-results.sarif || true
+      - name: Run Snyk Code test
+        run: snyk code test --json > snyk-code-results.json || true
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
 
-      - name: Generate Snyk Code PR summary
+      - name: Generate PR comment summary (Code)
         run: |
           node <<'EOF'
           const fs = require('fs');
-          const sarif = JSON.parse(fs.readFileSync('snyk-code-results.sarif', 'utf8'));
-          const severityRank = level => ({ error: 2, warning: 1 }[level] || 0);
-          const severityIcons = { error: '🔴', warning: '🟠' };
+          const data = JSON.parse(fs.readFileSync('snyk-code-results.json', 'utf8'));
+
+          const results = data.runs?.[0]?.results || [];
+          const rules = (data.runs?.[0]?.tool?.driver?.rules || []).reduce((acc, rule) => {
+            acc[rule.id] = rule;
+            return acc;
+          }, {});
 
           const repoUrl = process.env.GITHUB_SERVER_URL + '/' + process.env.GITHUB_REPOSITORY;
-          const branch = process.env.GITHUB_HEAD_REF || process.env.GITHUB_REF_NAME || 'main';
-          const fileIssuesMap = {};
+          const commit = process.env.GITHUB_SHA;
 
-          for (const run of sarif.runs || []) {
-            const rules = Object.fromEntries((run.tool.driver.rules || []).map(r => [r.id, r]));
-            for (const result of run.results || []) {
-              const level = result.level;
-              if (!['error', 'warning'].includes(level)) continue;
+          const severityIcons = { high: '🟠', medium: '🟡', low: '🟢' };
+          const severityRank = { high: 3, medium: 2, low: 1 };
 
-              const file = result.locations?.[0]?.physicalLocation?.artifactLocation?.uri || 'unknown';
-              const startLine = result.locations?.[0]?.physicalLocation?.region?.startLine || '?';
-              const rule = rules[result.ruleId] || {};
-              const message = rule.shortDescription?.text || result.message?.text || 'No description';
-              const helpUrl = `https://security.snyk.io/rules/${result.ruleId}`;
+          const annotatedResults = results.map(r => {
+            const rule = rules[r.ruleId] || {};
+            const severity = rule?.properties?.securitySeverityLevel || 'low';
+            return { ...r, severity };
+          });
 
-              fileIssuesMap[file] = fileIssuesMap[file] || [];
-              fileIssuesMap[file].push({ level, startLine, ruleId: result.ruleId, message, helpUrl });
-            }
-          }
+          const filtered = annotatedResults.filter(r => ['high', 'medium'].includes(r.severity));
 
-          let output = '<!-- SNYK_CODE_SUMMARY -->\n';
-          output += '## 🧠 Snyk Code Security Issues by File\n\n';
+          const output = [];
+          output.push('<!-- SNYK_CODE_SUMMARY -->');
+          output.push('## 🛡️ Snyk Code Issues Summary\n');
 
-          if (Object.keys(fileIssuesMap).length === 0) {
-            output += '_No `error` or `warning` level issues found._\n';
+          if (filtered.length === 0) {
+            output.push('_No high or medium severity issues found._\n');
           } else {
-            for (const file of Object.keys(fileIssuesMap)) {
-              const issues = fileIssuesMap[file].sort((a, b) => severityRank(b.level) - severityRank(a.level));
-              const fileLink = `${repoUrl}/blob/${branch}/${file}`;
-              output += `### 📄 [${file}](${fileLink})\n`;
-              output += `| Severity | Rule | Line | Description |\n`;
-              output += `|----------|------|------|-------------|\n`;
-              for (const issue of issues) {
-                const icon = severityIcons[issue.level] || '';
-                output += `| ${icon} ${issue.level.toUpperCase()} | [${issue.ruleId}](${issue.helpUrl}) | ${issue.startLine} | ${issue.message} |\n`;
-              }
-              output += '\n';
+            output.push('| Severity | File | Line | Message | Rule ID |');
+            output.push('|----------|------|------|---------|---------|');
+
+            for (const issue of filtered.sort((a, b) => severityRank[b.severity] - severityRank[a.severity])) {
+              const icon = severityIcons[issue.severity] || '';
+              const loc = issue.locations?.[0]?.physicalLocation || {};
+              const file = loc.artifactLocation?.uri || 'unknown';
+              const line = loc.region?.startLine || 'N/A';
+              const message = issue.message?.text?.replace(/\|/g, '\\|') || 'N/A';
+              const ruleId = issue.ruleId || 'N/A';
+              const fileLink = `${repoUrl}/blob/${commit}/${file}#L${line}`;
+
+              output.push(`| ${icon} ${issue.severity.toUpperCase()} | [${file}](${fileLink}) | ${line} | ${message} | ${ruleId} |`);
             }
           }
 
-          output += '\n---\n';
-          output += `### ℹ️ Notes\n`;
-          output += `- Only \`error\` and \`warning\` severity issues are included.\n`;
-          output += `- Each rule links to [Snyk's Vulnerability Database](https://security.snyk.io/) for more info.\n`;
-          fs.writeFileSync('pr-code-comment.md', output);
+          output.push('\n---\n');
+          output.push('ℹ️ Showing only **high** and **medium** severity issues as reported by `snyk code test`.\n');
+          fs.writeFileSync('pr-comment-code.md', output.join('\n'));
           EOF
 
-      - name: Add summary to PR checks tab
-        run: cat pr-code-comment.md >> $GITHUB_STEP_SUMMARY
+      - name: Add summary to PR Checks tab
+        run: cat pr-comment-code.md >> $GITHUB_STEP_SUMMARY
 
-      - name: Create or update PR comment for Snyk Code
+      - name: Edit or create Snyk Code PR comment
         if: github.event_name == 'pull_request'
         run: |
           COMMENT_ID=$(gh pr view "$PR_URL" --json comments -q '.comments[] | select(.body | contains("<!-- SNYK_CODE_SUMMARY -->")) | .id')
           if [ -n "$COMMENT_ID" ]; then
-            gh pr comment "$PR_URL" --edit-last --body-file pr-code-comment.md
+            gh pr comment "$PR_URL" --edit-last --body-file pr-comment-code.md
           else
-            gh pr comment "$PR_URL" --body-file pr-code-comment.md
+            gh pr comment "$PR_URL" --body-file pr-comment-code.md
           fi
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
