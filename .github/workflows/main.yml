@@ -1,4 +1,4 @@
-name: Snyk Code Summary with PR Comment
+name: (Code) Snyk Code Summary with PR Comment
 
 on:
   pull_request:
@@ -20,57 +20,63 @@ jobs:
       - name: Install Snyk CLI
         uses: snyk/actions/setup@master
 
-      - name: Run Snyk Code scan
+      - name: Run Snyk Code test
         run: snyk code test --json > snyk-code-results.json || true
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
 
-      - name: Generate PR comment summary
+      - name: Generate PR comment summary (Code)
         run: |
           node <<'EOF'
           const fs = require('fs');
-          const path = require('path');
           const data = JSON.parse(fs.readFileSync('snyk-code-results.json', 'utf8'));
-          
+
           const results = data.runs?.[0]?.results || [];
+          const rules = (data.runs?.[0]?.tool?.driver?.rules || []).reduce((acc, rule) => {
+            acc[rule.id] = rule;
+            return acc;
+          }, {});
+
           const repoUrl = process.env.GITHUB_SERVER_URL + '/' + process.env.GITHUB_REPOSITORY;
           const commit = process.env.GITHUB_SHA;
 
-          const severityRank = { critical: 4, high: 3 };
-          const severityIcons = { critical: '🔴', high: '🟠' };
-          const outputLines = [];
+          const severityIcons = { high: '🟠', medium: '🟡', low: '🟢' };
+          const severityRank = { high: 3, medium: 2, low: 1 };
 
-          const filtered = results.filter(r => {
-            const sev = r.partialFingerprints?.severity || 'low';
-            return ['critical', 'high'].includes(sev);
+          const annotatedResults = results.map(r => {
+            const rule = rules[r.ruleId] || {};
+            const severity = rule?.properties?.securitySeverityLevel || 'low';
+            return { ...r, severity };
           });
 
-          outputLines.push('<!-- SNYK_CODE_SUMMARY -->');
-          outputLines.push('## 🛡️ Snyk Code Issues Summary\n');
+          const filtered = annotatedResults.filter(r => ['high', 'medium'].includes(r.severity));
+
+          const output = [];
+          output.push('<!-- SNYK_CODE_SUMMARY -->');
+          output.push('## 🛡️ Snyk Code Issues Summary\n');
 
           if (filtered.length === 0) {
-            outputLines.push('_No high or critical severity issues found._\n');
+            output.push('_No high or medium severity issues found._\n');
           } else {
-            outputLines.push('| Severity | File | Line | Message | Rule ID |');
-            outputLines.push('|----------|------|------|---------|---------|');
+            output.push('| Severity | File | Line | Message | Rule ID |');
+            output.push('|----------|------|------|---------|---------|');
 
-            for (const issue of filtered) {
-              const severity = issue.partialFingerprints?.severity || 'unknown';
-              const icon = severityIcons[severity] || '';
-              const location = issue.locations?.[0]?.physicalLocation || {};
-              const file = location.artifactLocation?.uri || 'unknown';
-              const line = location.region?.startLine || 'N/A';
+            for (const issue of filtered.sort((a, b) => severityRank[b.severity] - severityRank[a.severity])) {
+              const icon = severityIcons[issue.severity] || '';
+              const loc = issue.locations?.[0]?.physicalLocation || {};
+              const file = loc.artifactLocation?.uri || 'unknown';
+              const line = loc.region?.startLine || 'N/A';
               const message = issue.message?.text?.replace(/\|/g, '\\|') || 'N/A';
               const ruleId = issue.ruleId || 'N/A';
-
               const fileLink = `${repoUrl}/blob/${commit}/${file}#L${line}`;
-              outputLines.push(`| ${icon} ${severity.toUpperCase()} | [${file}](${fileLink}) | ${line} | ${message} | ${ruleId} |`);
+
+              output.push(`| ${icon} ${issue.severity.toUpperCase()} | [${file}](${fileLink}) | ${line} | ${message} | ${ruleId} |`);
             }
           }
 
-          outputLines.push('\n---\n');
-          outputLines.push(`ℹ️ Only **high** and **critical** severity issues are shown.`);
-          fs.writeFileSync('pr-comment-code.md', outputLines.join('\n'));
+          output.push('\n---\n');
+          output.push('ℹ️ Showing only **high** and **medium** severity issues as reported by `snyk code test`.\n');
+          fs.writeFileSync('pr-comment-code.md', output.join('\n'));
           EOF
 
       - name: Add summary to PR Checks tab
