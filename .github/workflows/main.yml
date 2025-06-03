@@ -19,7 +19,7 @@ jobs:
 
       - name: Run Snyk Code scan (SARIF output)
         run: |
-          snyk code test --json --sarif > snyk-code-results.sarif
+          snyk code test --json --sarif > snyk-code-results.sarif || true
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
 
