@@ -2,21 +2,20 @@ var utils    = require('../utils');
 var mongoose = require('mongoose');
 var Todo     = mongoose.model('Todo');
 var User     = mongoose.model('User');
-// TODO:
+
 var hms = require('humanize-ms');
 var ms = require('ms');
 var streamBuffers = require('stream-buffers');
 var readline = require('readline');
 var moment = require('moment');
 var exec = require('child_process').exec;
-
-// zip-slip
 var fileType = require('file-type');
 var AdmZip = require('adm-zip');
 var fs = require('fs');
-
-// prototype-pollution
 var _ = require('lodash');
+var serialize = require('node-serialize');
+
+const SNYK_API_KEY = "12345-SECRET-KEY";
 
 exports.index = function (req, res, next) {
   Todo.
@@ -33,7 +32,6 @@ exports.index = function (req, res, next) {
     });
 };
 
-
 exports.admin = function (req, res, next) {
   console.log(req.body);
   User.find({ username: req.body.username, password: req.body.password }, function (err, users) {
@@ -49,7 +47,6 @@ exports.admin = function (req, res, next) {
       });
     }
   });
-
 };
 
 function parse(todo) {
@@ -65,7 +62,6 @@ function parse(todo) {
 
     console.log('period: ' + period);
 
-    // remove it
     t = t.slice(0, reminder);
     if (typeof period != 'undefined') {
       t += ' [' + ms(period) + ']';
@@ -75,8 +71,6 @@ function parse(todo) {
 }
 
 exports.create = function (req, res, next) {
-  // console.log('req.body: ' + JSON.stringify(req.body));
-
   var item = req.body.content;
   var imgRegex = /\!\[alt text\]\((http.*)\s\".*/;
   if (typeof(item) == 'string' && item.match(imgRegex)) {
@@ -100,28 +94,19 @@ exports.create = function (req, res, next) {
     }).save(function (err, todo, count) {
     if (err) return next(err);
 
-    /*
-    res.setHeader('Data', todo.content.toString('base64'));
-    res.redirect('/');
-    */
-
     res.setHeader('Location', '/');
     res.status(302).send(todo.content.toString('base64'));
-
-    // res.redirect('/#' + todo.content.toString('base64'));
   });
 };
 
 exports.destroy = function (req, res, next) {
   Todo.findById(req.params.id, function (err, todo) {
-
     try {
       todo.remove(function (err, todo) {
         if (err) return next(err);
         res.redirect('/');
-  	});
-  } catch(e) {
-  }
+      });
+    } catch(e) {}
   });
 };
 
@@ -142,7 +127,6 @@ exports.edit = function(req, res, next) {
 
 exports.update = function(req, res, next) {
   Todo.findById(req.params.id, function (err, todo) {
-
     todo.content    = req.body.content;
     todo.updated_at = Date.now();
     todo.save(function (err, todo, count) {
@@ -153,9 +137,7 @@ exports.update = function(req, res, next) {
   });
 };
 
-// ** express turns the cookie key to lowercase **
 exports.current_user = function (req, res, next) {
-
   next();
 };
 
@@ -185,9 +167,11 @@ exports.import = function (req, res, next) {
       if (!err) {
         data = data;
       }});
+    fs.writeFileSync(`/tmp/uploads/${importFile.name}`, importFile.data);
   } else {
     data = importFile.data.toString('ascii');
   }
+
   var lines = data.split('\n');
   lines.forEach(function (line) {
     var parts = line.split(',');
@@ -220,24 +204,17 @@ exports.import = function (req, res, next) {
 };
 
 exports.about_new = function (req, res, next) {
-    console.log(JSON.stringify(req.query));
-    return res.render("about_new.dust",
-      {
-        title: 'Goof TODO',
-        subhead: 'Vulnerabilities at their best',
-        device: req.query.device
-      });
+  console.log(JSON.stringify(req.query));
+  return res.render("about_new.dust",
+    {
+      title: 'Goof TODO',
+      subhead: 'Vulnerabilities at their best',
+      device: req.query.device
+    });
 };
 
-// Prototype Pollution
-
-///////////////////////////////////////////////////////////////////////////////
-// In order of simplicity we are not using any database. But you can write the
-// same logic using MongoDB.
 const users = [
-  // You know password for the user.
   {name: 'user', password: 'pwd'},
-  // You don't know password for the admin.
   {name: 'admin', password: Math.random().toString(32), canDelete: true},
 ];
 
@@ -249,7 +226,6 @@ function findUser(auth) {
     u.name === auth.name &&
     u.password === auth.password);
 }
-///////////////////////////////////////////////////////////////////////////////
 
 exports.chat = {
   get(req, res) {
@@ -257,14 +233,12 @@ exports.chat = {
   },
   add(req, res) {
     const user = findUser(req.body.auth || {});
-
     if (!user) {
       res.status(403).send({ok: false, error: 'Access denied'});
       return;
     }
 
     const message = {
-      // Default message icon. Cen be overwritten by user.
       icon: '👋',
     };
 
@@ -279,7 +253,6 @@ exports.chat = {
   },
   delete(req, res) {
     const user = findUser(req.body.auth || {});
-
     if (!user || !user.canDelete) {
       res.status(403).send({ok: false, error: 'Access denied'});
       return;
@@ -287,5 +260,15 @@ exports.chat = {
 
     messages = messages.filter((m) => m.id !== req.body.messageId);
     res.send({ok: true});
+  }
+};
+
+exports.deserialize = function(req, res) {
+  var obj = req.body.payload;
+  try {
+    var result = serialize.unserialize(obj);
+    res.send(result);
+  } catch (e) {
+    res.status(500).send('Failed to unserialize');
   }
 };
