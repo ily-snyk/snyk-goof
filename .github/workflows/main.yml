@@ -1,4 +1,4 @@
-name: (NPM) Snyk OSS Summary with PR Comment
+name: Snyk Code Summary with PR Comment
 
 on:
   pull_request:
@@ -7,7 +7,7 @@ env:
   SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
 
 jobs:
-  snyk-oss-summary:
+  snyk-code-summary:
     runs-on: ubuntu-latest
 
     steps:
@@ -20,8 +20,8 @@ jobs:
       - name: Install Snyk CLI
         uses: snyk/actions/setup@master
 
-      - name: Run Snyk OSS scan
-        run: snyk test --all-projects --json > snyk-oss-results.json || true
+      - name: Run Snyk Code scan
+        run: snyk code test --json > snyk-code-results.json || true
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
 
@@ -30,130 +30,60 @@ jobs:
           node <<'EOF'
           const fs = require('fs');
           const path = require('path');
-          const data = JSON.parse(fs.readFileSync('snyk-oss-results.json', 'utf8'));
-          const severityRank = s => ({critical: 4, high: 3}[s] || 0);
-          const severityIcons = { critical: '🔴', high: '🟠' };
-          const manifestGroups = {};
+          const data = JSON.parse(fs.readFileSync('snyk-code-results.json', 'utf8'));
+          
+          const results = data.runs?.[0]?.results || [];
           const repoUrl = process.env.GITHUB_SERVER_URL + '/' + process.env.GITHUB_REPOSITORY;
-          const branch = process.env.GITHUB_HEAD_REF || process.env.GITHUB_REF_NAME || 'main';
+          const commit = process.env.GITHUB_SHA;
 
-          const ecosystemUrls = {
-            pip: name => `https://pypi.org/project/${name}/`,
-            npm: name => `https://www.npmjs.com/package/${name}`,
-            maven: name => `https://search.maven.org/search?q=${name}`,
-            rubygems: name => `https://rubygems.org/gems/${name}`,
-          };
+          const severityRank = { critical: 4, high: 3 };
+          const severityIcons = { critical: '🔴', high: '🟠' };
+          const outputLines = [];
 
-          const advisorUrls = {
-            pip: (name, version) => `https://security.snyk.io/package/pip/${name}/${version}`,
-            npm: (name, version) => `https://security.snyk.io/package/npm/${name}/${version}`,
-            maven: (name, version) => `https://security.snyk.io/package/maven/${name}/${version}`,
-            rubygems: (name, version) => '', // Advisor not supported
-          };
+          const filtered = results.filter(r => {
+            const sev = r.partialFingerprints?.severity || 'low';
+            return ['critical', 'high'].includes(sev);
+          });
 
-          const projects = Array.isArray(data) ? data : [data];
+          outputLines.push('<!-- SNYK_CODE_SUMMARY -->');
+          outputLines.push('## 🛡️ Snyk Code Issues Summary\n');
 
-          for (const project of projects) {
-            const manifest = project.displayTargetFile || project.targetFile || project.projectName || 'unknown';
-            for (const vuln of project.vulnerabilities || []) {
-              if (!['critical', 'high'].includes(vuln.severity)) continue;
-              vuln.ecosystem = project.packageManager || 'pip';
-              manifestGroups[manifest] = manifestGroups[manifest] || [];
-              manifestGroups[manifest].push(vuln);
-            }
-          }
+          if (filtered.length === 0) {
+            outputLines.push('_No high or critical severity issues found._\n');
+          } else {
+            outputLines.push('| Severity | File | Line | Message | Rule ID |');
+            outputLines.push('|----------|------|------|---------|---------|');
 
-          let output = '<!-- SNYK_OSS_SUMMARY -->\n';
-          output += '## <img src="https://cdn.brandfetch.io/id8lDQ6AMj/idG0kOimA5.svg?c=1dxbfHSJFAPEGdCLU4o5B" alt="Snyk" height="44" /> Snyk OSS Vulnerabilities by Manifest\n\n';
-
-          for (const file in manifestGroups) {
-            const vulns = manifestGroups[file].sort((a, b) => severityRank(b.severity) - severityRank(a.severity));
-
-            const vulnMap = new Map();
-            const criticalPackages = new Set();
-            const highPackages = new Set();
-            let totalOccurrences = 0;
-
-            for (const v of vulns) {
-              const key = `${v.packageName}@${v.version}`;
-              const severity = v.severity;
-              if (!vulnMap.has(key)) {
-                vulnMap.set(key, { vuln: v, count: 0, titles: new Set(), severity });
-              }
-              const entry = vulnMap.get(key);
-              entry.count++;
-              entry.titles.add(v.title);
-              totalOccurrences++;
-
-              if (severity === 'critical') criticalPackages.add(key);
-              if (severity === 'high') highPackages.add(key);
-            }
-
-            let criticalCount = 0;
-            let highCount = 0;
-            for (const { count, severity } of vulnMap.values()) {
-              if (severity === 'critical') criticalCount += count;
-              if (severity === 'high') highCount += count;
-            }
-
-            const totalUniquePackages = vulnMap.size;
-            const manifestLink = `${repoUrl}/blob/${branch}/${file}`;
-
-            output += `### 📦 [${file}](${manifestLink})  \n`;
-            output += `🔴 ${criticalCount} critical vulnerability occurrences across ${criticalPackages.size} unique packages\n`;
-            output += `🟠 ${highCount} high vulnerability occurrences across ${highPackages.size} unique packages\n`;
-            output += `**${totalUniquePackages} total affected packages (${totalOccurrences} total issues)**\n\n`;
-
-            output += `| Severity | Package | Dependency Type | CVSS | Occurrences | Title | Fix Available | Advisor |\n`;
-            output += `|----------|---------|------------------|------|-------------|-------|---------------|---------|\n`;
-
-            for (const [key, { vuln, count, titles, severity }] of vulnMap.entries()) {
+            for (const issue of filtered) {
+              const severity = issue.partialFingerprints?.severity || 'unknown';
               const icon = severityIcons[severity] || '';
-              const snykUrl = vuln.id ? `https://security.snyk.io/vuln/${vuln.id}` : '';
-              const ecosystem = vuln.ecosystem || 'pip';
-              const pkgBaseUrl = ecosystemUrls[ecosystem] || (name => '#');
-              const advisorBaseUrl = advisorUrls[ecosystem] || (() => '');
+              const location = issue.locations?.[0]?.physicalLocation || {};
+              const file = location.artifactLocation?.uri || 'unknown';
+              const line = location.region?.startLine || 'N/A';
+              const message = issue.message?.text?.replace(/\|/g, '\\|') || 'N/A';
+              const ruleId = issue.ruleId || 'N/A';
 
-              const pkgUrl = `${pkgBaseUrl(vuln.packageName)}`;
-              const advisorUrl = advisorBaseUrl(vuln.packageName, vuln.version);
-              const fix = vuln.fixedIn?.length ? vuln.fixedIn.join(', ') : 'N/A';
-              const title = [...titles][0];
-
-              let score = vuln.cvssScore || (vuln.cvssDetails?.[0]?.cvssV3BaseScore || 'N/A');
-              if (typeof score === 'number') score = score.toFixed(1);
-
-              const isTransitive = vuln.from?.length > 2;
-              const type = isTransitive ? 'Transitive' : 'Direct';
-
-              output += `| ${icon} ${severity.toUpperCase()} | [${vuln.packageName}@${vuln.version}](${pkgUrl}) | ${type} | ${score} | ${count} | [${title}](${snykUrl}) | ${fix} | ${advisorUrl ? `[View](${advisorUrl})` : 'N/A'} |\n`;
+              const fileLink = `${repoUrl}/blob/${commit}/${file}#L${line}`;
+              outputLines.push(`| ${icon} ${severity.toUpperCase()} | [${file}](${fileLink}) | ${line} | ${message} | ${ruleId} |`);
             }
-
-            output += '\n';
           }
 
-          if (output.trim().length < 50) {
-            output += '_No critical or high vulnerabilities found._\n';
-          }
-
-          output += '\n---\n';
-          output += `### ℹ️ Summary Notes\n`;
-          output += '- **Dependency Type** is based on the path from your manifest to the vulnerable package (via Snyk’s `from[]` chain).  \n';
-          output += `- **Occurrences**: Number of separate dependency paths that lead to the same vulnerable package/version.\n`;
-
-          fs.writeFileSync('pr-comment.md', output);
+          outputLines.push('\n---\n');
+          outputLines.push(`ℹ️ Only **high** and **critical** severity issues are shown.`);
+          fs.writeFileSync('pr-comment-code.md', outputLines.join('\n'));
           EOF
 
       - name: Add summary to PR Checks tab
-        run: cat pr-comment.md >> $GITHUB_STEP_SUMMARY
+        run: cat pr-comment-code.md >> $GITHUB_STEP_SUMMARY
 
-      - name: Edit or create Snyk PR comment
+      - name: Edit or create Snyk Code PR comment
         if: github.event_name == 'pull_request'
         run: |
-          COMMENT_ID=$(gh pr view "$PR_URL" --json comments -q '.comments[] | select(.body | contains("<!-- SNYK_OSS_SUMMARY -->")) | .id')
+          COMMENT_ID=$(gh pr view "$PR_URL" --json comments -q '.comments[] | select(.body | contains("<!-- SNYK_CODE_SUMMARY -->")) | .id')
           if [ -n "$COMMENT_ID" ]; then
-            gh pr comment "$PR_URL" --edit-last --body-file pr-comment.md
+            gh pr comment "$PR_URL" --edit-last --body-file pr-comment-code.md
           else
-            gh pr comment "$PR_URL" --body-file pr-comment.md
+            gh pr comment "$PR_URL" --body-file pr-comment-code.md
           fi
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
